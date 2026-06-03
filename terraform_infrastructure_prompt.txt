@@ -1,0 +1,311 @@
+============================================================================================
+SENIOR DATA ENGINEER — TERRAFORM INFRASTRUCTURE PROMPT
+Music Streaming ETL Pipeline | AWS | GitHub Actions CI | terraform test
+============================================================================================
+
+ROLE & CONTEXT
+--------------
+You are a senior data engineer building the AWS infrastructure for a music streaming ETL
+pipeline. The pipeline ingests CSV stream files from S3, processes them with AWS Glue
+(PySpark + Python Shell jobs), orchestrates execution with Step Functions, and writes KPI
+results to DynamoDB. All infrastructure must be provisioned entirely via Terraform. No
+resources are to be created manually in the AWS console.
+
+
+PROJECT STRUCTURE
+-----------------
+Scaffold the repository with this layout before writing any Terraform:
+
+project-root/
+├── terraform/
+│   ├── main.tf                  # Root module — calls all child modules
+│   ├── variables.tf
+│   ├── outputs.tf
+│   ├── providers.tf             # AWS provider + Terraform version constraints
+│   ├── backend.tf               # Local state config
+│   ├── terraform.tfvars         # Non-secret variable values
+│   └── modules/
+│       ├── s3/
+│       │   ├── main.tf
+│       │   ├── variables.tf
+│       │   └── outputs.tf
+│       ├── dynamodb/
+│       │   ├── main.tf
+│       │   ├── variables.tf
+│       │   └── outputs.tf
+│       ├── iam/
+│       │   ├── main.tf
+│       │   ├── variables.tf
+│       │   └── outputs.tf
+│       ├── glue/
+│       │   ├── main.tf
+│       │   ├── variables.tf
+│       │   └── outputs.tf
+│       ├── stepfunctions/
+│       │   ├── main.tf
+│       │   ├── variables.tf
+│       │   ├── outputs.tf
+│       │   └── state_machine.asl.json
+│       └── eventbridge/
+│           ├── main.tf
+│           ├── variables.tf
+│           └── outputs.tf
+├── README.md                    # Project overview, setup instructions, architecture
+├── tests/
+│   ├── s3.tftest.hcl
+│   ├── dynamodb.tftest.hcl
+│   ├── iam.tftest.hcl
+│   ├── glue.tftest.hcl
+│   ├── stepfunctions.tftest.hcl
+│   ├── eventbridge.tftest.hcl
+│   └── README.md                # How to run tests locally
+└── .github/
+    └── workflows/
+        └── terraform-ci.yml
+
+
+MODULE SPECIFICATIONS
+---------------------
+Write each module completely — no stubs or placeholders. Every variable must have a
+description and type. Every module must expose the resource ARNs and names it creates via
+outputs.tf so dependent modules can consume them without hardcoding.
+
+--- modules/s3 ---
+- Create four S3 buckets: raw, reference, archive, processed
+- Enable versioning on raw and reference buckets
+- Block all public access on all buckets
+- Enable server-side encryption (SSE-S3) on all buckets
+- Attach lifecycle rules to raw: transition objects to S3-IA after 30 days, expire after 90 days
+- Output: all bucket names and ARNs
+
+--- modules/dynamodb ---
+- Table name: music_streaming_kpis
+- Partition key: genre (String), sort key: date (String)
+- Billing mode: PAY_PER_REQUEST (on-demand)
+- Enable point-in-time recovery
+- Output: table name and ARN
+
+--- modules/iam ---
+- Create a Glue execution role (aws_iam_role) with a trust policy for glue.amazonaws.com
+- Attach AWSGlueServiceRole managed policy
+- Attach a custom inline policy granting:
+    s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket on the four S3 bucket ARNs
+    (passed in as variables from the S3 module outputs)
+    dynamodb:PutItem, dynamodb:BatchWriteItem, dynamodb:GetItem, dynamodb:Query
+    on the DynamoDB table ARN
+    logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents for CloudWatch
+- Create a Step Functions execution role with a trust policy for states.amazonaws.com
+- Attach an inline policy allowing Step Functions to start and monitor Glue job runs:
+    glue:StartJobRun, glue:GetJobRun, glue:GetJobRuns
+- Output: both role ARNs
+
+--- modules/glue ---
+- Create a Glue catalog database: music_streaming_db
+- Create three Glue jobs:
+    validation_job        — type pythonshell, Python 3.9, max_capacity = 0.0625
+    transformation_job    — type glueetl, glue_version = "4.0", number_of_workers = 2,
+                            worker_type = "G.1X"
+    dynamodb_ingestion_job — type pythonshell, Python 3.9, max_capacity = 0.0625
+- Each job's script_location must point to a path in the reference S3 bucket
+  (e.g. s3://your-bucket/scripts/validation_job.py) — pass the bucket name in as a variable
+- Set --enable-continuous-cloudwatch-log and --enable-spark-ui as default arguments
+  on the PySpark transformation job
+- Output: all three job names
+
+--- modules/s3 (addition) ---
+- Enable EventBridge notifications on the raw bucket by adding an
+  aws_s3_bucket_notification resource with eventbridge = true. This allows S3 to publish
+  Object Created events to EventBridge automatically.
+
+--- modules/stepfunctions ---
+- Create the state machine using aws_sfn_state_machine
+- Define the ASL (Amazon States Language) JSON inline as a Terraform templatefile() —
+  the template file lives at terraform/modules/stepfunctions/state_machine.asl.json
+- The ASL must define states in this order:
+    ListRawFiles → ValidateSchema → RunTransformJob → RunDynamoIngestionJob → ArchiveFiles → Success
+  with a Catch block on each state routing failures to a JobFailed terminal state
+- Pass Glue job names into the ASL via templatefile() variables — never hardcode job names
+  inside the ASL
+- Output: state machine ARN and name
+
+--- modules/eventbridge ---
+- Create an EventBridge rule (aws_cloudwatch_event_rule) that:
+    Listens for source "aws.s3", detail-type "Object Created"
+    Filters on the raw S3 bucket name and key suffix ".csv" using an event pattern
+    The bucket name must be passed in as a variable from the S3 module output — never
+    hardcoded
+- Create an EventBridge target (aws_cloudwatch_event_target) pointing to the Step
+  Functions state machine ARN (passed in as a variable from the stepfunctions module
+  output)
+- Create a dedicated IAM role for EventBridge with:
+    Trust policy for events.amazonaws.com
+    Inline policy granting states:StartExecution on the Step Functions state machine ARN
+- Output: rule ARN, rule name
+
+
+TESTING REQUIREMENTS
+--------------------
+Use native terraform test (built into Terraform 1.6+) exclusively. Write one .tftest.hcl file per module in tests/.
+
+Each file must:
+- Declare mock_provider "aws" {} so no real AWS credentials are needed
+- Use command = plan to validate resource logic without deploying anything
+- Include at minimum two assert blocks per module checking critical attributes:
+    s3:            encryption enabled, public access blocked
+    dynamodb:      billing_mode = "PAY_PER_REQUEST", hash_key = "genre", range_key = "date"
+    iam:           trust policy principal matches expected service (glue, states, events)
+    glue:          correct job types and glue_version
+    stepfunctions: state machine definition is not empty
+    eventbridge:   event pattern contains correct source and detail-type
+
+Example structure:
+    mock_provider "aws" {}
+    run "dynamodb_table_config" {
+      command = plan
+      assert {
+        condition     = aws_dynamodb_table.this.billing_mode == "PAY_PER_REQUEST"
+        error_message = "DynamoDB billing mode must be PAY_PER_REQUEST"
+      }
+      assert {
+        condition     = aws_dynamodb_table.this.point_in_time_recovery[0].enabled == true
+        error_message = "Point-in-time recovery must be enabled"
+      }
+    }
+
+Run command: terraform test (from the terraform/ root directory)
+
+--- COVERAGE GATE ---
+The CI pipeline must assert that every folder in terraform/modules/ has a matching
+.tftest.hcl file in tests/. If any module is missing a test file, the pipeline fails
+immediately with a clear error message listing which modules are untested.
+
+Include a tests/README.md explaining:
+- How to run all tests locally: terraform test
+- How to run tests for a single module
+- What mock_provider means and why no AWS account is needed
+
+
+CI PIPELINE — GITHUB ACTIONS
+-----------------------------
+Create .github/workflows/terraform-ci.yml
+Trigger: on every pull request targeting main
+
+Enforce these checks in order, failing fast if any step fails:
+
+STEP 1 — TEST COVERAGE GATE
+Parse the terraform/modules/ directory and assert that every module folder has a matching
+.tftest.hcl file in tests/. If any module is missing a test file, fail the pipeline
+immediately with a clear error message listing which modules are untested. This must run
+as a plain shell script step — no third-party actions.
+
+STEP 2 — terraform fmt -check -recursive
+Fails if any .tf file is not formatted correctly. Engineers must run terraform fmt
+locally before pushing.
+
+STEP 3 — terraform validate
+Initialize with a mocked backend (-backend=false) and validate all module configs.
+
+STEP 4 — tflint
+Lint all modules for AWS best practices. Use the terraform-linters/setup-tflint action.
+Configure .tflint.hcl to enable the aws ruleset.
+
+STEP 5 — tfsec
+Security scan using aquasecurity/tfsec-action. Configure severity threshold so the
+pipeline fails on HIGH or CRITICAL findings. MEDIUM findings produce warnings only.
+
+STEP 6 — TERRAFORM TEST
+Run terraform test against all modules using mock providers. No AWS credentials needed.
+This step runs on every PR immediately after tfsec. Command:
+    cd terraform && terraform test ../tests/
+
+The pipeline does NOT run terraform apply on every PR. That runs only on merge to main
+in a separate deployment workflow. Define that workflow file with one job:
+  Job 1 — terraform apply (leave as a commented placeholder with # TODO: add approval gate)
+           requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY set as GitHub Actions secrets
+
+
+GENERAL STANDARDS
+-----------------
+- Terraform version: >= 1.6.0. AWS provider version: ~> 5.0
+- All resources must have a tags variable passed from the root module containing at minimum:
+    Project, Environment, ManagedBy = "terraform"
+- No hardcoded AWS account IDs, region names, or ARNs anywhere.
+  Use data "aws_caller_identity" and data "aws_region" where needed.
+- Local state: Use the default local backend. backend.tf should contain:
+
+    terraform {
+      backend "local" {
+        path = "terraform.tfstate"
+      }
+    }
+
+  Add terraform.tfstate and terraform.tfstate.backup to .gitignore — never commit state
+  files to version control as they can contain sensitive resource details.
+- Every .tf file must have a comment block at the top describing what it provisions.
+- Write the complete, working code — no "# add logic here" comments, no incomplete
+  resource blocks.
+
+README.md — PROJECT ROOT
+------------------------
+Generate a README.md at the project root. This is a living document — it will be updated
+as the project grows to include the Glue job scripts, validation logic, transformation
+logic, and DynamoDB ingestion. Write only what applies to the infrastructure phase for now.
+Leave clearly marked placeholder sections for future phases so the document is easy to
+extend later.
+
+The README must include the following sections in this order:
+
+1. PROJECT OVERVIEW
+   Brief description of what the pipeline does: ingests music streaming CSV files from S3,
+   transforms them with AWS Glue, orchestrates with Step Functions, and stores KPI results
+   in DynamoDB. One short paragraph — no bullet points.
+
+2. ARCHITECTURE
+   A text-based diagram showing the trigger and processing flow:
+   S3 (raw/) → EventBridge → Step Functions → [Validation Job → Transformation Job →
+   DynamoDB Ingestion Job] → DynamoDB, with S3 (archive/) as the final destination for
+   processed files. Keep it simple and readable in plain text.
+
+3. REPOSITORY STRUCTURE
+   A copy of the full folder tree (matching the structure defined in this prompt) with a
+   one-line comment explaining each file and folder.
+
+4. INFRASTRUCTURE SETUP (Terraform)
+   Step-by-step instructions for a first-time setup:
+   - Prerequisites: Terraform >= 1.6.0, AWS CLI configured
+   - How to clone the repo and navigate to the terraform/ directory
+   - How to run terraform init, terraform plan, terraform apply
+   - How to destroy infrastructure with terraform destroy
+   - A note that terraform.tfstate is local and must never be committed to git
+
+5. AWS RESOURCES PROVISIONED
+   A table listing every AWS resource created by Terraform, its module, and its purpose.
+   Columns: Resource | Module | Purpose
+
+6. CI PIPELINE
+   Explain what the GitHub Actions pipeline checks on every PR (test coverage gate,
+   fmt, validate, tflint, tfsec) and what triggers a deployment (merge to main).
+
+7. TESTING
+   Explain the testing approach: native terraform test with mock providers. Tests run locally and on every PR. Point the reader to
+   tests/README.md for full setup and run instructions.
+
+8. GLUE JOBS — PLACEHOLDER
+   Add this section with the following placeholder text exactly:
+   > This section will be updated when Glue job scripts are added.
+   > Jobs to be documented: validation_job, transformation_job, dynamodb_ingestion_job.
+
+9. KPI DEFINITIONS — PLACEHOLDER
+   Add this section with the following placeholder text exactly:
+   > This section will be updated when the transformation logic is implemented.
+   > KPIs to be documented: Listen Count, Unique Listeners, Total Listening Time,
+   > Average Listening Time per User, Top 3 Songs per Genre per Day, Top 5 Genres per Day.
+
+10. DYNAMODB ACCESS PATTERNS — PLACEHOLDER
+    Add this section with the following placeholder text exactly:
+    > This section will be updated when the DynamoDB ingestion job is implemented.
+    > Will include sample query patterns and example boto3 / AWS CLI commands.
+
+============================================================================================
+END OF PROMPT
+============================================================================================

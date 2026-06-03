@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+
+# Local state files — never commit; they can contain sensitive resource details.
+terraform.tfstate
+terraform.tfstate.backup
+**/terraform.tfstate
+**/terraform.tfstate.backup
+
+# Crash logs and per-run plan output.
+crash.log
+crash.*.log
+*.tfplan
+
+# Provider plugins, modules cache, lock metadata directory.
+.terraform/
+.terraform.lock.hcl
+
+# Terraform test working directories.
+**/.terraform/
+
+# Sensitive / machine-specific variable files (terraform.tfvars is committed as
+# it holds only non-secret values; ignore secret override files).
+*.auto.tfvars
+secrets.tfvars
+*.tfvars.json
+
+# ---------------------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,109 @@
+# ---------------------------------------------------------------------------
+# Terraform CI — runs on every pull request targeting main.
+#
+# Enforces, in order and failing fast:
+#   1. Test coverage gate  (every module has a matching .tftest.hcl)
+#   2. terraform fmt -check -recursive
+#   3. terraform validate  (mocked backend)
+#   4. tflint              (AWS ruleset)
+#   5. tfsec               (fail on HIGH/CRITICAL; MEDIUM = warning only)
+#   6. terraform test      (native tests with mock providers)
+#
+# This workflow never runs `terraform apply`. Deployment happens only on merge
+# to main, in terraform-deploy.yml.
+# ---------------------------------------------------------------------------
+name: Terraform CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  terraform-ci:
+    name: Validate, lint, scan, test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- STEP 1: Test coverage gate (plain shell, no third-party action) ----
+      - name: Test coverage gate
+        run: |
+          set -euo pipefail
+          modules_dir="terraform/modules"
+          tests_dir="terraform/tests"
+          missing=()
+
+          for module_path in "$modules_dir"/*/; do
+            module="$(basename "$module_path")"
+            if [[ ! -f "$tests_dir/$module.tftest.hcl" ]]; then
+              missing+=("$module")
+            fi
+          done
+
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::The following modules have no matching .tftest.hcl test file in $tests_dir:"
+            for m in "${missing[@]}"; do
+              echo "::error::  - $m (expected $tests_dir/$m.tftest.hcl)"
+            done
+            exit 1
+          fi
+          echo "Coverage gate passed: every module under $modules_dir has a matching test file."
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ">= 1.6.0"
+
+      # ---- STEP 2: Formatting ----
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      # ---- STEP 3: Validate with a mocked backend ----
+      - name: terraform init (no backend)
+        run: terraform init -backend=false
+        working-directory: terraform
+
+      - name: terraform validate
+        run: terraform validate
+        working-directory: terraform
+
+      # ---- STEP 4: tflint (AWS best practices) ----
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive
+        working-directory: terraform
+
+      # ---- STEP 5: tfsec security scan ----
+      # First pass: surface MEDIUM (and below) findings as non-blocking warnings.
+      - name: tfsec (warnings only)
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: terraform
+          soft_fail: true
+
+      # Second pass: fail the build on HIGH or CRITICAL findings.
+      - name: tfsec (fail on HIGH/CRITICAL)
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: terraform
+          soft_fail: false
+          additional_args: --minimum-severity HIGH
+
+      # ---- STEP 6: Native terraform test (mock providers, no AWS account) ----
+      - name: terraform test
+        run: terraform test
+        working-directory: terraform

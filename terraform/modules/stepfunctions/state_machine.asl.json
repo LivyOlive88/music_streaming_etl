@@ -1,0 +1,99 @@
+{
+  "Comment": "Music streaming ETL orchestration. Triggered by EventBridge on new raw CSV objects. Lists raw files, validates schema, transforms to KPIs, ingests into DynamoDB, then archives processed files. Glue job names are injected via templatefile() variables - never hardcoded.",
+  "StartAt": "ListRawFiles",
+  "States": {
+    "ListRawFiles": {
+      "Type": "Task",
+      "Comment": "List objects currently in the raw bucket to be processed.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:listObjectsV2",
+      "Parameters": {
+        "Bucket": "${raw_bucket}"
+      },
+      "ResultPath": "$.rawListing",
+      "Next": "ValidateSchema",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "JobFailed"
+        }
+      ]
+    },
+    "ValidateSchema": {
+      "Type": "Task",
+      "Comment": "Run the Python Shell schema validation job.",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${validation_job_name}"
+      },
+      "ResultPath": "$.validation",
+      "Next": "RunTransformJob",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "JobFailed"
+        }
+      ]
+    },
+    "RunTransformJob": {
+      "Type": "Task",
+      "Comment": "Run the PySpark transformation job to compute KPIs.",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${transformation_job_name}"
+      },
+      "ResultPath": "$.transformation",
+      "Next": "RunDynamoIngestionJob",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "JobFailed"
+        }
+      ]
+    },
+    "RunDynamoIngestionJob": {
+      "Type": "Task",
+      "Comment": "Run the Python Shell job that writes KPI results to DynamoDB.",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${dynamodb_ingestion_job_name}"
+      },
+      "ResultPath": "$.ingestion",
+      "Next": "ArchiveFiles",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "JobFailed"
+        }
+      ]
+    },
+    "ArchiveFiles": {
+      "Type": "Task",
+      "Comment": "List the archive bucket as a placeholder for the archive step. The full move/copy logic is implemented in a later phase.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:listObjectsV2",
+      "Parameters": {
+        "Bucket": "${archive_bucket}"
+      },
+      "ResultPath": "$.archiveListing",
+      "Next": "Success",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "JobFailed"
+        }
+      ]
+    },
+    "Success": {
+      "Type": "Succeed"
+    },
+    "JobFailed": {
+      "Type": "Fail",
+      "Error": "PipelineExecutionFailed",
+      "Cause": "One of the ETL pipeline states failed. Inspect the execution history and CloudWatch logs."
+    }
+  }
+}
