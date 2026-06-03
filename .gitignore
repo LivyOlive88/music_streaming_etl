@@ -33,3 +33,11 @@ secrets.tfvars
 .idea/
 .DS_Store
 Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Project assets / docs not tracked in version control
+# ---------------------------------------------------------------------------
+data/
+terraform_infrastructure_prompt.txt
+# Brackets are escaped because [ ] are glob character classes in .gitignore.
+2--ETL with s3, dynamo and Glue \[updated\].docx
