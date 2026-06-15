@@ -104,3 +104,44 @@ resource "aws_s3_bucket_notification" "raw_eventbridge" {
   bucket      = aws_s3_bucket.buckets["raw"].id
   eventbridge = true
 }
+
+# ---------------------------------------------------------------------------
+# Reference data + Glue job scripts.
+#
+# The reference datasets are uploaded to the root of the reference bucket; the
+# three Glue job scripts are uploaded under a scripts/ prefix (matching the
+# script_location values in modules/glue/main.tf). The etag (filemd5) means
+# Terraform re-uploads a file only when its content changes.
+# ---------------------------------------------------------------------------
+
+resource "aws_s3_object" "songs" {
+  bucket = aws_s3_bucket.buckets["reference"].bucket
+  key    = "songs.csv"
+  source = "${path.module}/../../../data/songs/songs.csv"
+  etag   = filemd5("${path.module}/../../../data/songs/songs.csv")
+}
+
+resource "aws_s3_object" "users" {
+  bucket = aws_s3_bucket.buckets["reference"].bucket
+  key    = "users.csv"
+  source = "${path.module}/../../../data/users/users.csv"
+  etag   = filemd5("${path.module}/../../../data/users/users.csv")
+}
+
+# The three Glue job scripts, uploaded under scripts/ in the reference bucket.
+locals {
+  glue_job_scripts = [
+    "validation_job",
+    "transformation_job",
+    "dynamodb_ingestion_job",
+  ]
+}
+
+resource "aws_s3_object" "glue_scripts" {
+  for_each = toset(local.glue_job_scripts)
+
+  bucket = aws_s3_bucket.buckets["reference"].bucket
+  key    = "scripts/${each.key}.py"
+  source = "${path.module}/../../../glue_jobs/${each.key}.py"
+  etag   = filemd5("${path.module}/../../../glue_jobs/${each.key}.py")
+}

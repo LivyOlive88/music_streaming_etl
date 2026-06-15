@@ -8,6 +8,9 @@
 #   4. tflint              (AWS ruleset)
 #   5. tfsec               (fail on HIGH/CRITICAL; MEDIUM = warning only)
 #   6. terraform test      (native tests with mock providers)
+#   7. Python test coverage gate (every glue job has a matching test file)
+#   8. flake8              (Python lint, max line length 100)
+#   9. pytest              (Python unit tests, >= 80% coverage of glue_jobs/)
 #
 # This workflow never runs `terraform apply`. Deployment happens only on merge
 # to main, in terraform-deploy.yml.
@@ -107,3 +110,48 @@ jobs:
       - name: terraform test
         run: terraform test
         working-directory: terraform
+
+      # ---- STEP 7: Python test coverage gate (plain shell, no third-party action) ----
+      # Every Python file under glue_jobs/ must have a matching test_<name>.py in tests/.
+      - name: Python test coverage gate
+        run: |
+          set -euo pipefail
+          jobs_dir="glue_jobs"
+          tests_dir="tests"
+          missing=()
+
+          for job_path in "$jobs_dir"/*.py; do
+            job="$(basename "$job_path" .py)"
+            if [[ ! -f "$tests_dir/test_$job.py" ]]; then
+              missing+=("$job")
+            fi
+          done
+
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::The following Glue jobs have no matching test_*.py in $tests_dir:"
+            for j in "${missing[@]}"; do
+              echo "::error::  - $j (expected $tests_dir/test_$j.py)"
+            done
+            exit 1
+          fi
+          echo "Python coverage gate passed: every glue job has a matching test file."
+
+      # ---- Python toolchain (PySpark needs a supported interpreter; 3.14 is not yet) ----
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ---- STEP 8: Python lint (flake8) ----
+      - name: flake8
+        run: |
+          pip install flake8
+          flake8 glue_jobs/ tests/ --max-line-length=100
+
+      # ---- STEP 9: Python unit tests (pytest) with coverage gate ----
+      # PySpark is installed so test_transformation_job.py also runs here.
+      - name: pytest
+        run: |
+          pip install pytest pytest-cov pyspark pandas pyarrow boto3
+          pytest tests/ -v \
+            --cov=glue_jobs --cov-report=term-missing --cov-fail-under=80

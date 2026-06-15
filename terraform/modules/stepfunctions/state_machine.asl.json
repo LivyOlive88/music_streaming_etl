@@ -71,13 +71,39 @@
       ]
     },
     "ArchiveFiles": {
-      "Type": "Task",
-      "Comment": "List the archive bucket as a placeholder for the archive step. The full move/copy logic is implemented in a later phase.",
-      "Resource": "arn:aws:states:::aws-sdk:s3:listObjectsV2",
-      "Parameters": {
-        "Bucket": "${archive_bucket}"
+      "Type": "Map",
+      "ItemsPath": "$.rawListing.Contents",
+      "ItemSelector": {
+        "Key.$": "$$.Map.Item.Value.Key"
       },
-      "ResultPath": "$.archiveListing",
+      "MaxConcurrency": 10,
+      "Iterator": {
+        "StartAt": "CopyToArchive",
+        "States": {
+          "CopyToArchive": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+            "Parameters": {
+              "Bucket": "${archive_bucket}",
+              "CopySource.$": "States.Format('${raw_bucket}/{}', $.Key)",
+              "Key.$": "$.Key"
+            },
+            "ResultPath": null,
+            "Next": "DeleteFromRaw"
+          },
+          "DeleteFromRaw": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+            "Parameters": {
+              "Bucket": "${raw_bucket}",
+              "Key.$": "$.Key"
+            },
+            "ResultPath": null,
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.archiveResult",
       "Next": "Success",
       "Catch": [
         {

@@ -1,14 +1,13 @@
 # ---------------------------------------------------------------------------
 # Terraform Deploy — runs on merge to main.
 #
-# This workflow applies the infrastructure. The apply step is intentionally
-# left as a COMMENTED PLACEHOLDER: a manual approval gate must be wired up
-# before any automated apply runs against a real AWS account.
-#
-# Requires the following GitHub Actions secrets to be configured before the
-# apply step is enabled:
+# Requires the following GitHub Actions secrets to be configured:
 #   - AWS_ACCESS_KEY_ID
 #   - AWS_SECRET_ACCESS_KEY
+#
+# The `environment: production` gate below requires a GitHub "production"
+# environment with required reviewers configured in repository Settings →
+# Environments before this workflow will deploy automatically.
 # ---------------------------------------------------------------------------
 name: Terraform Deploy
 
@@ -27,9 +26,7 @@ jobs:
   deploy:
     name: terraform apply
     runs-on: ubuntu-latest
-    # TODO: add approval gate — e.g. a GitHub "production" environment with
-    #       required reviewers — before enabling the apply step below.
-    # environment: production
+    environment: production
 
     steps:
       - name: Checkout
@@ -40,20 +37,18 @@ jobs:
         with:
           terraform_version: ">= 1.6.0"
 
-      # The following steps are deliberately commented out until an approval
-      # gate is in place. Uncomment and configure once reviewers are required.
-      #
-      # - name: terraform init
-      #   run: terraform init
-      #   working-directory: terraform
-      #
-      # - name: terraform apply
-      #   run: terraform apply -auto-approve
-      #   working-directory: terraform
-      #   env:
-      #     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      #     AWS_REGION: eu-west-1
+      - name: terraform init
+        run: terraform init
+        working-directory: terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-west-1
 
-      - name: Deployment placeholder
-        run: echo "Apply step is a placeholder. Wire up an approval gate before enabling automated apply."
+      - name: terraform apply
+        run: terraform apply -auto-approve
+        working-directory: terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-west-1

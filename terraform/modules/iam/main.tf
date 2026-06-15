@@ -125,16 +125,23 @@ resource "aws_iam_role_policy" "sfn_inline" {
           "glue:StartJobRun",
           "glue:GetJobRun",
           "glue:GetJobRuns",
+          "glue:BatchStopJobRun",
         ]
         Resource = "arn:aws:glue:${var.region}:${var.account_id}:job/*"
       },
-      # Required by the ListRawFiles / ArchiveFiles states in the ASL definition,
-      # which call the S3 ListObjectsV2 SDK integration on the pipeline buckets.
       {
-        Sid      = "S3ListForOrchestration"
-        Effect   = "Allow"
-        Action   = "s3:ListBucket"
-        Resource = var.s3_bucket_arns
+        Sid    = "S3Orchestration"
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+        ]
+        Resource = concat(
+          var.s3_bucket_arns,
+          [for arn in var.s3_bucket_arns : "${arn}/*"],
+        )
       },
     ]
   })

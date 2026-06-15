@@ -37,6 +37,21 @@ variable "dynamodb_ingestion_job_name" {
   default     = "dynamodb_ingestion_job"
 }
 
+variable "raw_bucket_name" {
+  description = "Name of the raw S3 bucket, passed to the validation and transformation jobs as --raw_bucket."
+  type        = string
+}
+
+variable "processed_bucket_name" {
+  description = "Name of the processed S3 bucket, passed to the transformation and DynamoDB ingestion jobs as --processed_bucket."
+  type        = string
+}
+
+variable "dynamodb_table_name" {
+  description = "Name of the DynamoDB KPI table, passed to the DynamoDB ingestion job as --dynamodb_table."
+  type        = string
+}
+
 variable "tags" {
   description = "Common tags applied to all Glue jobs (Project, Environment, ManagedBy)."
   type        = map(string)

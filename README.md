@@ -35,6 +35,20 @@ This project provisions the AWS infrastructure for a music streaming ETL pipelin
 
 ```
 project-root/
+├── glue_jobs/                        # Python scripts for the three Glue jobs
+│   ├── validation_job.py             # Python Shell — schema-validates raw stream CSVs
+│   ├── transformation_job.py         # PySpark — joins, transforms, computes KPIs
+│   └── dynamodb_ingestion_job.py     # Python Shell — writes computed KPIs to DynamoDB
+├── scripts/
+│   └── upload_reference_data.py      # One-time helper to upload songs.csv/users.csv to S3
+├── data/                             # Local source data (uploaded to the reference/raw buckets)
+│   ├── songs/songs.csv               # Static song metadata (join key: track_id)
+│   ├── users/users.csv               # Static user metadata (join key: user_id)
+│   └── streams/streams*.csv          # Sample raw stream files
+├── tests/                            # Python pytest unit tests (mocked AWS / local Spark)
+│   ├── test_validation_job.py
+│   ├── test_transformation_job.py
+│   └── test_dynamodb_ingestion_job.py
 ├── terraform/
 │   ├── main.tf                       # Root module — wires all child modules together
 │   ├── variables.tf                  # Root input variables
@@ -156,6 +170,12 @@ request targeting `main`** and enforces these checks in order, failing fast:
 4. **tflint** — lints all modules against the AWS ruleset (`.tflint.hcl`).
 5. **tfsec** — security scan; **fails on HIGH/CRITICAL** findings, MEDIUM are warnings only.
 6. **`terraform test`** — native tests with mock providers (no AWS account needed).
+7. **Python test coverage gate** — a plain shell step asserts every file in `glue_jobs/`
+   has a matching `tests/test_<job>.py`, failing immediately and listing any untested jobs.
+8. **flake8** — lints `glue_jobs/` and `tests/` with `--max-line-length=100`; fails on any finding.
+9. **pytest** — runs the Python unit tests with coverage (`--cov=glue_jobs`) and **fails if
+   coverage drops below 80%**. The runner pins **Python 3.11** and installs PySpark so
+   `test_transformation_job.py` also executes here.
 
 Deployment is **not** run on PRs. On **merge to `main`**,
 `.github/workflows/terraform-deploy.yml` is the deployment workflow; its
@@ -176,16 +196,71 @@ terraform test -filter=tests/dynamodb.tftest.hcl  # single module
 
 See [terraform/tests/README.md](terraform/tests/README.md) for full setup and run instructions.
 
-## 8. Glue Jobs — Placeholder
+## 8. Glue Jobs
 
-> This section will be updated when Glue job scripts are added.
-> Jobs to be documented: validation_job, transformation_job, dynamodb_ingestion_job.
+The pipeline runs three Glue jobs in sequence, orchestrated by Step Functions. Each job's
+Python script lives in `glue_jobs/` and is uploaded to `s3://<reference>/scripts/<job>.py`.
 
-## 9. KPI Definitions — Placeholder
+### 8.1 `validation_job.py` — schema validation
 
-> This section will be updated when the transformation logic is implemented.
-> KPIs to be documented: Listen Count, Unique Listeners, Total Listening Time,
-> Average Listening Time per User, Top 3 Songs per Genre per Day, Top 5 Genres per Day.
+| | |
+|---|---|
+| **Runtime** | Glue Python Shell (boto3 + pandas) |
+| **Trigger** | First state in the state machine (`ValidateSchema`) |
+| **Parameters** | `--raw_bucket` — name of the raw S3 bucket |
+| **Reads** | The header row only of every `*.csv` in `s3://<raw>/` (ranged `get_object`) |
+| **Writes** | Nothing — succeeds or raises |
+
+**What it does:** lists every `.csv` in the raw bucket and reads only each file's header.
+It checks that all three required columns (`user_id`, `track_id`, `listen_time`) are present.
+If no files are found it logs a warning and exits cleanly. If any file is missing columns or
+cannot be read, it raises a `ValueError` listing each failed file so Step Functions routes to
+`JobFailed`.
+
+### 8.2 `transformation_job.py` — KPI transformation
+
+| | |
+|---|---|
+| **Runtime** | Glue ETL / PySpark, Glue version 4.0 |
+| **Trigger** | `RunTransformJob` state |
+| **Parameters** | `--JOB_NAME`, `--raw_bucket`, `--reference_bucket`, `--processed_bucket` |
+| **Reads** | `s3://<raw>/*.csv` (streams), `s3://<reference>/songs.csv`, `s3://<reference>/users.csv` |
+| **Writes** | `s3://<processed>/kpis/date=YYYY-MM-DD/` as Parquet (`partitionBy("date")`, overwrite) |
+
+**What it does:** loads streams, songs and users; casts column types (dropping un-castable
+rows); inner-joins streams to songs on `track_id` to add genre/duration/track metadata;
+derives a `date` column from `listen_time`; computes the genre-level daily KPIs; ranks the
+top 3 songs per genre/day and embeds them as an array of structs; flags the top 5 genres per
+day; and writes the result as date-partitioned Parquet.
+
+### 8.3 `dynamodb_ingestion_job.py` — DynamoDB ingestion
+
+| | |
+|---|---|
+| **Runtime** | Glue Python Shell (boto3 + pandas + pyarrow) |
+| **Trigger** | `RunDynamoIngestionJob` state |
+| **Parameters** | `--processed_bucket`, `--dynamodb_table` |
+| **Reads** | `s3://<processed>/kpis/` (all Parquet files) |
+| **Writes** | One item per `(genre, date)` into the `music_streaming_kpis` DynamoDB table |
+
+**What it does:** reads the KPI Parquet, validates the expected columns are present, reshapes
+each row into a DynamoDB item (numpy types stripped, dates as `YYYY-MM-DD` strings, floats
+converted to `Decimal`), and writes via `batch_writer` (25 items/call with automatic retries).
+`PutItem` overwrites items with the same `(genre, date)` key, so re-running for the same date
+updates the KPIs rather than duplicating them.
+
+## 9. KPI Definitions
+
+All KPIs are computed per **genre per day** by the transformation job.
+
+| KPI Name | Definition | Computation |
+|----------|------------|-------------|
+| Listen Count | Total play events per genre per day | `count(*)` |
+| Unique Listeners | Distinct users per genre per day | `countDistinct(user_id)` |
+| Total Listening Time | Sum of `duration_ms` per genre per day | `sum(duration_ms)` |
+| Avg Listening Time / User | Mean listening time per user per day | `total_listening_time_ms / unique_listeners` |
+| Top 3 Songs per Genre | Most-played songs per genre per day | `rank()` window over `(date, genre)` by play count, `rank <= 3` |
+| Top 5 Genres per Day | Genres with the highest listen count | `rank()` window over `date` by `listen_count`, `rank <= 5` (`is_top_5` flag) |
 
 ## 10. DynamoDB Access Patterns — Placeholder
 

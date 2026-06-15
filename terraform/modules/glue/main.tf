@@ -34,6 +34,7 @@ resource "aws_glue_job" "validation" {
 
   default_arguments = {
     "--enable-continuous-cloudwatch-log" = "true"
+    "--raw_bucket"                       = var.raw_bucket_name
   }
 
   tags = var.tags
@@ -53,12 +54,14 @@ resource "aws_glue_job" "transformation" {
     script_location = "${local.scripts_base}/transformation_job.py"
   }
 
-  # CloudWatch logging + Spark UI for the PySpark job.
   default_arguments = {
     "--enable-continuous-cloudwatch-log" = "true"
     "--enable-spark-ui"                  = "true"
     "--spark-event-logs-path"            = "s3://${var.reference_bucket_name}/spark-logs/"
     "--job-language"                     = "python"
+    "--raw_bucket"                       = var.raw_bucket_name
+    "--reference_bucket"                 = var.reference_bucket_name
+    "--processed_bucket"                 = var.processed_bucket_name
   }
 
   tags = var.tags
@@ -79,6 +82,8 @@ resource "aws_glue_job" "dynamodb_ingestion" {
 
   default_arguments = {
     "--enable-continuous-cloudwatch-log" = "true"
+    "--processed_bucket"                 = var.processed_bucket_name
+    "--dynamodb_table"                   = var.dynamodb_table_name
   }
 
   tags = var.tags
