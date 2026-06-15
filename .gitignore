@@ -37,7 +37,9 @@ Thumbs.db
 # ---------------------------------------------------------------------------
 # Project assets / docs not tracked in version control
 # ---------------------------------------------------------------------------
-data/
+# Raw stream test-upload files are not source code — ignore them.
+data/streams/
 terraform_infrastructure_prompt.txt
+glue_jobs_prompt.txt
 # Brackets are escaped because [ ] are glob character classes in .gitignore.
 2--ETL with s3, dynamo and Glue \[updated\].docx
