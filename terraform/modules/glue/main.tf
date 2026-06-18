@@ -62,6 +62,7 @@ resource "aws_glue_job" "transformation" {
     "--raw_bucket"                       = var.raw_bucket_name
     "--reference_bucket"                 = var.reference_bucket_name
     "--processed_bucket"                 = var.processed_bucket_name
+    "--quarantine_bucket"                = var.quarantine_bucket_name
   }
 
   tags = var.tags

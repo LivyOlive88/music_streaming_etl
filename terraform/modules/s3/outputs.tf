@@ -29,7 +29,12 @@ output "reference_bucket_name" {
   value       = aws_s3_bucket.buckets["reference"].id
 }
 
+output "quarantine_bucket_name" {
+  description = "Name of the quarantine bucket that stores rows rejected by data quality checks."
+  value       = aws_s3_bucket.buckets["quarantine"].id
+}
+
 output "all_bucket_arns" {
-  description = "List of all four bucket ARNs, for IAM policy statements."
+  description = "List of all five bucket ARNs (raw/reference/archive/processed/quarantine), for IAM policy statements."
   value       = [for b in aws_s3_bucket.buckets : b.arn]
 }

@@ -15,10 +15,11 @@
 locals {
   # Map of logical bucket name -> concrete bucket name (<prefix>-<logical>).
   buckets = {
-    raw       = "${var.bucket_prefix}-raw"
-    reference = "${var.bucket_prefix}-reference"
-    archive   = "${var.bucket_prefix}-archive"
-    processed = "${var.bucket_prefix}-processed"
+    raw        = "${var.bucket_prefix}-raw"
+    reference  = "${var.bucket_prefix}-reference"
+    archive    = "${var.bucket_prefix}-archive"
+    processed  = "${var.bucket_prefix}-processed"
+    quarantine = "${var.bucket_prefix}-quarantine"
   }
 
   # Buckets that require object versioning enabled.

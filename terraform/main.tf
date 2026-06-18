@@ -53,13 +53,14 @@ module "iam" {
 module "glue" {
   source = "./modules/glue"
 
-  database_name         = var.glue_database_name
-  reference_bucket_name = module.s3.reference_bucket_name
-  raw_bucket_name       = module.s3.raw_bucket_name
-  processed_bucket_name = module.s3.bucket_names["processed"]
-  dynamodb_table_name   = var.dynamodb_table_name
-  glue_role_arn         = module.iam.glue_role_arn
-  tags                  = local.common_tags
+  database_name          = var.glue_database_name
+  reference_bucket_name  = module.s3.reference_bucket_name
+  raw_bucket_name        = module.s3.raw_bucket_name
+  processed_bucket_name  = module.s3.bucket_names["processed"]
+  quarantine_bucket_name = module.s3.quarantine_bucket_name
+  dynamodb_table_name    = var.dynamodb_table_name
+  glue_role_arn          = module.iam.glue_role_arn
+  tags                   = local.common_tags
 }
 
 # Step Functions state machine orchestrating the ETL flow.

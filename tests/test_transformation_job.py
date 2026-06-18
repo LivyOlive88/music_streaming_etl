@@ -128,3 +128,213 @@ def test_drops_rows_with_null_track_id(spark):
     track_ids = [r["track_id"] for r in joined.collect()]
     assert None not in track_ids
     assert joined.count() == 1
+
+
+# ---------------------------------------------------------------------------
+# tag_invalid_rows — data quality / quarantine tests
+# ---------------------------------------------------------------------------
+
+def test_valid_rows_all_pass(spark):
+    """All valid rows should appear in clean, quarantine should be None."""
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("2", "t2", "2024-06-25 11:00:00"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 2
+    assert quarantine is None
+
+
+def test_quarantine_null_user_id(spark):
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            (None, "t2", "2024-06-25 11:00:00"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 1
+    assert quarantine is not None
+    assert quarantine.count() == 1
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "null user_id" in reason
+
+
+def test_quarantine_null_track_id(spark):
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("2", None, "2024-06-25 11:00:00"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "null track_id" in reason
+
+
+def test_quarantine_null_listen_time(spark):
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("2", "t2", None),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "null listen_time" in reason
+
+
+def test_quarantine_multiple_null_columns(spark):
+    """Row with both null user_id and null track_id lists both in the reason."""
+    streams = make_streams(spark, [(None, None, "2024-06-25 10:00:00")])
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 0
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "null user_id" in reason
+    assert "null track_id" in reason
+
+
+def test_quarantine_blank_user_id(spark):
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("  ", "t2", "2024-06-25 11:00:00"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "blank user_id" in reason
+
+
+def test_quarantine_blank_track_id(spark):
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("2", "", "2024-06-25 11:00:00"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "blank track_id" in reason
+
+
+def test_quarantine_non_numeric_user_id(spark):
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("abc", "t2", "2024-06-25 11:00:00"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "non-numeric user_id" in reason
+
+
+def test_quarantine_non_positive_user_id(spark):
+    """user_id of 0 and negative values should be quarantined."""
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("0", "t2", "2024-06-25 11:00:00"),
+            ("-5", "t3", "2024-06-25 12:00:00"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 1
+    assert quarantine is not None
+    assert quarantine.count() == 2
+    reasons = [r["_quarantine_reason"] for r in quarantine.collect()]
+    assert all("non-positive user_id" in r for r in reasons)
+
+
+def test_quarantine_invalid_timestamp(spark):
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("2", "t2", "not-a-date"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "invalid listen_time" in reason
+
+
+def test_quarantine_duplicate_rows(spark):
+    """Exact duplicate rows: only the first occurrence should be kept."""
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            ("1", "t1", "2024-06-25 10:00:00"),  # duplicate
+            ("2", "t2", "2024-06-25 11:00:00"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 2
+    assert quarantine is not None
+    assert quarantine.count() == 1
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "duplicate row" in reason
+
+
+def test_quarantine_mixed_failures(spark):
+    """A batch with multiple different failure types quarantines all bad rows."""
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),       # valid
+            (None, "t2", "2024-06-25 11:00:00"),       # null user_id
+            ("abc", "t3", "2024-06-25 12:00:00"),      # non-numeric user_id
+            ("2", "t4", "not-a-date"),                  # bad timestamp
+            ("3", "t5", "2024-06-25 13:00:00"),        # valid
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_rows(streams)
+    assert clean.count() == 2
+    assert quarantine is not None
+    assert quarantine.count() == 3
+
+
+def test_quarantine_reason_column_present(spark):
+    """quarantine_df must always have a _quarantine_reason column."""
+    streams = make_streams(spark, [(None, "t1", "2024-06-25 10:00:00")])
+    _, quarantine = tj.tag_invalid_rows(streams)
+    assert quarantine is not None
+    assert "_quarantine_reason" in quarantine.columns
+
+
+def test_clean_df_has_no_quarantine_reason_column(spark):
+    """clean_df must never carry the _quarantine_reason helper column."""
+    streams = make_streams(
+        spark,
+        [
+            ("1", "t1", "2024-06-25 10:00:00"),
+            (None, "t2", "2024-06-25 11:00:00"),
+        ],
+    )
+    clean, _ = tj.tag_invalid_rows(streams)
+    assert "_quarantine_reason" not in clean.columns

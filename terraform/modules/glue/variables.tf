@@ -52,6 +52,11 @@ variable "dynamodb_table_name" {
   type        = string
 }
 
+variable "quarantine_bucket_name" {
+  description = "Name of the quarantine S3 bucket, passed to the transformation job as --quarantine_bucket."
+  type        = string
+}
+
 variable "tags" {
   description = "Common tags applied to all Glue jobs (Project, Environment, ManagedBy)."
   type        = map(string)

@@ -4,8 +4,13 @@
 # ---------------------------------------------------------------------------
 
 output "s3_bucket_names" {
-  description = "Map of logical bucket key to bucket name."
+  description = "Map of logical bucket key to bucket name (raw/reference/archive/processed/quarantine)."
   value       = module.s3.bucket_names
+}
+
+output "quarantine_bucket_name" {
+  description = "Name of the quarantine bucket that stores rows rejected by data quality checks."
+  value       = module.s3.quarantine_bucket_name
 }
 
 output "s3_bucket_arns" {
