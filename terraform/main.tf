@@ -45,7 +45,7 @@ module "iam" {
   s3_bucket_arns     = module.s3.all_bucket_arns
   dynamodb_table_arn = module.dynamodb.table_arn
   account_id         = data.aws_caller_identity.current.account_id
-  region             = data.aws_region.current.name
+  region             = data.aws_region.current.region
   tags               = local.common_tags
 }
 
