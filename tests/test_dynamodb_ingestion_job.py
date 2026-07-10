@@ -115,3 +115,28 @@ def test_raises_on_empty_parquet():
             table=FakeTable(),
             reader=lambda _path: empty,
         )
+
+
+def test_raises_clear_error_on_nan_numeric_column():
+    """A NaN in a required numeric column (e.g. total_listening_time_ms is null
+    for every row of a genre because reference duration_ms was bad) must raise
+    a descriptive ValueError instead of the bare 'cannot convert float NaN to
+    integer' crash."""
+    df = sample_dataframe()
+    df.loc[0, "total_listening_time_ms"] = np.nan
+    with pytest.raises(ValueError) as exc_info:
+        job.reshape_row(df.iloc[0])
+    message = str(exc_info.value)
+    assert "total_listening_time_ms" in message
+    assert "genre=pop" in message
+
+
+def test_raises_clear_error_on_nan_in_top_songs():
+    df = sample_dataframe()
+    row = df.iloc[0].copy()
+    row["top_3_songs"] = [
+        {"rank": np.nan, "track_name": "A", "artists": "X", "play_count": np.int64(50)}
+    ]
+    with pytest.raises(ValueError) as exc_info:
+        job.reshape_row(row)
+    assert "top_3_songs.rank" in str(exc_info.value)

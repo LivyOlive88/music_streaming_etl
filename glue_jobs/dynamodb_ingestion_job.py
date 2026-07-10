@@ -74,7 +74,35 @@ def _to_native(value):
     return value
 
 
-def _reshape_songs(raw_songs):
+def _to_int(value, field_name, row_identifier):
+    """Convert *value* to ``int``, raising a clear error instead of crashing on NaN.
+
+    A KPI Parquet column that contains any nulls gets upcast by pandas to
+    float64 with NaN standing in for the null — ``int(float('nan'))`` raises
+    a bare ``ValueError: cannot convert float NaN to integer`` with no context
+    about which row caused it. This checks for that case explicitly first.
+    """
+    value = _to_native(value)
+    if pd.isna(value):
+        raise ValueError(
+            "KPI row (%s) has a null/NaN value in required numeric column "
+            "'%s' — cannot convert to int." % (row_identifier, field_name)
+        )
+    return int(value)
+
+
+def _to_float(value, field_name, row_identifier):
+    """Convert *value* to ``float``, raising a clear error instead of a bare NaN."""
+    value = _to_native(value)
+    if pd.isna(value):
+        raise ValueError(
+            "KPI row (%s) has a null/NaN value in required numeric column "
+            "'%s' — cannot convert to float." % (row_identifier, field_name)
+        )
+    return float(value)
+
+
+def _reshape_songs(raw_songs, row_identifier):
     """Normalise the top_3_songs cell into a list of plain-Python dict items."""
     if raw_songs is None:
         return []
@@ -83,10 +111,12 @@ def _reshape_songs(raw_songs):
         song = dict(song)
         songs.append(
             {
-                "rank": int(_to_native(song.get("rank"))),
+                "rank": _to_int(song.get("rank"), "top_3_songs.rank", row_identifier),
                 "track_name": str(song.get("track_name")),
                 "artists": str(song.get("artists")),
-                "play_count": int(_to_native(song.get("play_count"))),
+                "play_count": _to_int(
+                    song.get("play_count"), "top_3_songs.play_count", row_identifier
+                ),
             }
         )
     return songs
@@ -103,17 +133,26 @@ def reshape_row(row):
     if hasattr(date_value, "strftime"):
         date_value = date_value.strftime("%Y-%m-%d")
 
+    genre = str(_to_native(row["track_genre"]))
+    row_identifier = "genre=%s date=%s" % (genre, date_value)
+
     return {
-        "genre": str(_to_native(row["track_genre"])),
+        "genre": genre,
         "date": str(date_value),
-        "listen_count": int(_to_native(row["listen_count"])),
-        "unique_listeners": int(_to_native(row["unique_listeners"])),
-        "total_listening_time_ms": int(_to_native(row["total_listening_time_ms"])),
-        "avg_listening_time_per_user_ms": float(
-            _to_native(row["avg_listening_time_per_user_ms"])
+        "listen_count": _to_int(row["listen_count"], "listen_count", row_identifier),
+        "unique_listeners": _to_int(
+            row["unique_listeners"], "unique_listeners", row_identifier
+        ),
+        "total_listening_time_ms": _to_int(
+            row["total_listening_time_ms"], "total_listening_time_ms", row_identifier
+        ),
+        "avg_listening_time_per_user_ms": _to_float(
+            row["avg_listening_time_per_user_ms"],
+            "avg_listening_time_per_user_ms",
+            row_identifier,
         ),
         "is_top_5": bool(_to_native(row["is_top_5"])),
-        "top_3_songs": _reshape_songs(row["top_3_songs"]),
+        "top_3_songs": _reshape_songs(row["top_3_songs"], row_identifier),
     }
 
 

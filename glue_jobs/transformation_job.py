@@ -162,17 +162,123 @@ def tag_invalid_rows(streams_df):
     return clean, quarantine_df
 
 
-def write_quarantine(quarantine_df, quarantine_bucket):
-    """Append *quarantine_df* to s3://<quarantine_bucket>/quarantine/ as Parquet.
+def write_quarantine(quarantine_df, quarantine_bucket, prefix="quarantine"):
+    """Append *quarantine_df* to s3://<quarantine_bucket>/<prefix>/ as Parquet.
 
     Uses ``mode("append")`` so successive pipeline runs accumulate quarantine
-    records rather than overwriting them.
+    records rather than overwriting them. *prefix* defaults to ``quarantine``
+    (stream rows); reference-data quarantine uses ``quarantine/songs`` so the
+    two record shapes never land in the same Parquet path.
 
     Returns the quarantine S3 path written.
     """
-    path = "s3://%s/quarantine/" % quarantine_bucket
+    path = "s3://%s/%s/" % (quarantine_bucket, prefix)
     quarantine_df.write.mode("append").parquet(path)
     return path
+
+
+def tag_invalid_songs(songs_df):
+    """Classify reference song rows into clean and quarantined sets.
+
+    Checks (applied sequentially):
+        1. Null track_id.
+        2. Null or non-numeric duration_ms (cannot be cast to LongType).
+
+    A row with an un-castable duration_ms would otherwise pass silently —
+    Spark's ``.cast()`` turns it into a null instead of raising — and that
+    null then propagates through ``F.sum("duration_ms")`` into the KPI
+    output, eventually surfacing as a NaN the DynamoDB ingestion job can't
+    convert to an int.
+
+    Returns:
+        (clean_df, quarantine_df) — quarantine_df is None when every row passes.
+    """
+    quarantine_parts = []
+    clean = songs_df
+
+    null_track_mask = F.col("track_id").isNull()
+    null_track_rows = clean.filter(null_track_mask).withColumn(
+        "_quarantine_reason", F.lit("null track_id")
+    )
+    if null_track_rows.count() > 0:
+        quarantine_parts.append(null_track_rows)
+    clean = clean.filter(~null_track_mask)
+
+    bad_duration_mask = F.col("duration_ms").cast(LongType()).isNull()
+    bad_duration_rows = clean.filter(bad_duration_mask).withColumn(
+        "_quarantine_reason",
+        F.concat(
+            F.lit("invalid duration_ms: '"),
+            F.coalesce(F.col("duration_ms"), F.lit("null")),
+            F.lit("' cannot be cast to a number"),
+        ),
+    )
+    if bad_duration_rows.count() > 0:
+        quarantine_parts.append(bad_duration_rows)
+    clean = clean.filter(~bad_duration_mask)
+
+    quarantine_df = reduce(SparkDataFrame.union, quarantine_parts) if quarantine_parts else None
+    return clean, quarantine_df
+
+
+def quarantine_invalid_songs(songs_df, quarantine_bucket, logger=None):
+    """Validate reference song rows, quarantine failures to S3, return clean data.
+
+    Mirrors ``quarantine_invalid_rows`` but for the reference songs dataset,
+    so bad ``duration_ms`` values are caught here instead of silently
+    nulling out downstream KPI sums.
+
+    Returns:
+        (clean_df, total_quarantined_count)
+
+    Raises:
+        RuntimeError: if every song row is quarantined (nothing left to join against).
+    """
+    def log(msg):
+        if logger is not None:
+            logger.info(msg)
+
+    log("Starting data quality validation on reference song data.")
+    clean, quarantine_df = tag_invalid_songs(songs_df)
+
+    total_in = songs_df.count()
+    total_clean = clean.count()
+    total_quarantined = total_in - total_clean
+
+    if quarantine_df is not None and total_quarantined > 0:
+        reason_counts = (
+            quarantine_df.groupBy("_quarantine_reason")
+            .count()
+            .orderBy(F.col("count").desc())
+            .collect()
+        )
+        for row in reason_counts:
+            log(
+                "SONG QUARANTINE — reason: '%s' | affected rows: %d"
+                % (row["_quarantine_reason"], row["count"])
+            )
+
+        quarantine_path = write_quarantine(
+            quarantine_df, quarantine_bucket, prefix="quarantine/songs"
+        )
+        log(
+            "Wrote %d quarantined song row(s) to %s."
+            % (total_quarantined, quarantine_path)
+        )
+    else:
+        log(
+            "No song rows quarantined. All %d row(s) passed data quality checks."
+            % total_in
+        )
+
+    if total_clean == 0:
+        raise RuntimeError(
+            "All %d reference song row(s) were quarantined — no valid reference "
+            "data remains to join against. Check %s for details."
+            % (total_in, "s3://%s/quarantine/songs/" % quarantine_bucket)
+        )
+
+    return clean, total_quarantined
 
 
 def quarantine_invalid_rows(streams_df, quarantine_bucket, logger=None):
@@ -376,6 +482,20 @@ def build_kpis(streams_df, songs_df, quarantine_bucket=None, logger=None):
         log(
             "cast_stream_types dropped %d row(s) with un-castable "
             "user_id/listen_time (these should have been caught by quarantine)." % dropped
+        )
+
+    if quarantine_bucket:
+        songs_df, songs_quarantined_count = quarantine_invalid_songs(
+            songs_df, quarantine_bucket, logger=logger
+        )
+        log(
+            "Song quarantine step complete: %d row(s) rejected before KPI calculation."
+            % songs_quarantined_count
+        )
+    else:
+        log(
+            "No quarantine_bucket provided — skipping reference song data quality "
+            "checks. Invalid duration_ms values will be silently nulled by casting."
         )
 
     songs_cast = cast_song_types(songs_df)

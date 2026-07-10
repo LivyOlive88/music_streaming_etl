@@ -338,3 +338,68 @@ def test_clean_df_has_no_quarantine_reason_column(spark):
     )
     clean, _ = tj.tag_invalid_rows(streams)
     assert "_quarantine_reason" not in clean.columns
+
+
+# ---------------------------------------------------------------------------
+# tag_invalid_songs — reference data quality / quarantine tests
+# ---------------------------------------------------------------------------
+
+def test_valid_songs_all_pass(spark):
+    songs = make_songs(
+        spark,
+        [
+            ("t1", "pop", "1000", "Song1", "Artist1"),
+            ("t2", "rock", "2000", "Song2", "Artist2"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_songs(songs)
+    assert clean.count() == 2
+    assert quarantine is None
+
+
+def test_quarantine_null_song_track_id(spark):
+    songs = make_songs(
+        spark,
+        [
+            ("t1", "pop", "1000", "Song1", "Artist1"),
+            (None, "rock", "2000", "Song2", "Artist2"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_songs(songs)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "null track_id" in reason
+
+
+def test_quarantine_missing_duration_ms(spark):
+    """A blank duration_ms cannot be cast to LongType and must be quarantined,
+    not silently nulled through to the KPI sum."""
+    songs = make_songs(
+        spark,
+        [
+            ("t1", "pop", "1000", "Song1", "Artist1"),
+            ("t2", "rock", None, "Song2", "Artist2"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_songs(songs)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "invalid duration_ms" in reason
+
+
+def test_quarantine_non_numeric_duration_ms(spark):
+    songs = make_songs(
+        spark,
+        [
+            ("t1", "pop", "1000", "Song1", "Artist1"),
+            ("t2", "rock", "not-a-number", "Song2", "Artist2"),
+        ],
+    )
+    clean, quarantine = tj.tag_invalid_songs(songs)
+    assert clean.count() == 1
+    assert quarantine is not None
+    reason = quarantine.select("_quarantine_reason").collect()[0][0]
+    assert "invalid duration_ms" in reason
+    assert "not-a-number" in reason
