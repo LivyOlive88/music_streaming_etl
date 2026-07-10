@@ -127,7 +127,7 @@ def tag_invalid_rows(streams_df):
         F.concat(
             F.lit("invalid listen_time: '"),
             F.col("listen_time"),
-            F.lit("' cannot be parsed as a timestamp."),
+            F.lit("' cannot be parsed as a timestamp"),
         ),
     )
     if invalid_ts_rows.count() > 0:
