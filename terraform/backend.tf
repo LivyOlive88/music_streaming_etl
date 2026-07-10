@@ -1,12 +1,14 @@
 # ---------------------------------------------------------------------------
 # backend.tf
-# Configures local state storage. State is kept on the local filesystem; the
-# state files are gitignored and must never be committed (they can contain
-# sensitive resource details).
+# Configures remote state storage in S3, with a DynamoDB table for locking.
 # ---------------------------------------------------------------------------
 
 terraform {
-  backend "local" {
-    path = "terraform.tfstate"
+  backend "s3" {
+    bucket         = "music-streaming-etl-tfstate-821528308689"
+    key            = "terraform.tfstate"
+    region         = "eu-west-1"
+    dynamodb_table = "music-streaming-etl-tfstate-lock"
+    encrypt        = true
   }
 }
